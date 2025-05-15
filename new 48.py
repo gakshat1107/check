@@ -16,11 +16,12 @@ def read_input_args():
         parser = argparse.ArgumentParser(description='The Arguments --file, --dir and postgres creds are required')
         parser.add_argument('--file', '-f', help="Data Contract File Name", type=str, required=True)
         parser.add_argument('--dir', '-d', help="Data Contract Directory Path", type=str, default=DATA_CONTRACT_DEFAULT_PATH)
-        parser.add_argument('--psql_db', help="Postgres Database", required=True)
-        parser.add_argument('--psql_user', help="Postgres Username", required=True)
-        parser.add_argument('--psql_password', help="Postgres Password", required=True)
-        parser.add_argument('--psql_host', help="Postgres Hostname", required=True)
-        parser.add_argument('--psql_port', help="Postgres Port", required=True)
+        parser.add_argument('--psql_db', '-psql_db', help="Postgres Database ", type=str, required=True)
+        parser.add_argument('--psql_user', '-psql_user', help="Postgres Username", type=str, required=True)
+        parser.add_argument('--psql_password', '-psql_pwd', help="Postgres Password", type=str, required=True)
+        parser.add_argument('--psql_host', '-psql_host', help="Postgres Hostname", type=str, required=True)
+        parser.add_argument('--psql_port', '-psql_port', help="Postgres Port", type=str, required=True)
+
         args = parser.parse_args()
         return args
     except Exception as e:
@@ -92,10 +93,57 @@ def initialize_context():
         "split_logic_issues": []
     }
 
+def entity_name(file, context):
+    try:
+        if '_' not in file:
+            issue = {
+                "type": "ERROR",
+                "Location": "Entity Name Check",
+                "issueValue": 'Invalid Entity Name in FileName',
+                "expectedValue": "ENTITY_NAME_CONTRACTNAME_SPRINT5.xlsx",
+                "actualValue": file,
+                "issueDesc": "Ensure the filename follows ENTITY_NAME_... format."
+            }
+            context['other_issues'].append(issue)
+            log.error(issue['issueValue'], extra=issue)
+            generate_report(file, context)
+            sys.exit(1)
+
+        entity = file.split('_')[0].upper()
+        log.info("Entity Name from Data Contract: %s", entity)
+
+        connection, cursor = context['connection'], context['cursor']
+        query = f"SELECT ENTITY_NAME FROM abc_db.ENTITY_MAPPING WHERE ENTITY_NAME = '{entity}';"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        if result is None:
+            issue = {
+                "type": "ERROR",
+                "Location": "ENTITY Check in DB",
+                "issueValue": 'Entity does not exist in DB - ENTITY_MAPPING',
+                "expectedValue": f"Entity should exist in DB: {entity}",
+                "actualValue": entity,
+                "issueDesc": "Add the entity to the database or correct its name."
+            }
+            context['other_issues'].append(issue)
+            log.error(issue['issueValue'], extra=issue)
+            generate_report(file, context)
+            sys.exit(1)
+
+        log.info("Entity from DB is valid: %s", result[0])
+        context['entity_name'] = result[0]
+        return result[0]
+
+    except Exception as e:
+        generate_report(file, context)
+        log.error("Exception occurred while verifying Entity", exc_info=True)
+        sys.exit(1)
+
 def process_file(file, data_contract_path, context):
     try:
         log.info(f"Processing file: {file}")
-        file_path = os.path.join(data_contract_path, file)
+        entity_name(file, context)
+        file_path = os.path.join(data_contract_path,context['entity_name'], file)
         dfs = parse_data_contract(file_path, context)
         validate_headers(dfs, file, context)
         validate_datasets(dfs, file, context, data_contract_path)
@@ -125,34 +173,19 @@ def validate_headers(dfs, file, context):
         context['issues'].append(issue)
         log.error("Missing headers in file", extra=issue)
 
-def parse_datasets(dfs, context):
 
-
-        for idx, (_, row) in enumerate(dataset_df.iterrows()):
-
-            if not attribute_executed:
-                
-                
-   
-            current_count = {"index": idx + 1, "count": count}
-
-            
-        processed_datasets.append(dataset_name_clean)
-
-    return dfs, processed_datasets
-    
 def validate_datasets(dfs, file, context, data_contract_path):
 
     dfs = dfs.dropna(how='all').ffill()
-    dataset = dfs['Dataset Name'].dropna().unique()
-    entity_name = dfs['Entity'].dropna().unique()
+    dataset = dfs['Dataset Name'].dropna().unique()[0]
     attribute_col_index = dfs.columns.get_loc('Attribute')
     classification_col_index = dfs.columns.get_loc('Attribute Classification')
     processed_datasets = []
 
-    index_range = list(dfs.loc[dfs['Dataset Name'] == dataset].index)
+    index_range = list(dfs.index)
     start_index = index_range[0]
     end_index = index_range[-1] + 1
+
                
     attribute_list = dfs.values[start_index:end_index, attribute_col_index]
     attribute_classification_list = dfs.values[start_index:end_index, classification_col_index]
@@ -173,8 +206,8 @@ def validate_datasets(dfs, file, context, data_contract_path):
         validate_data_type(row.get('Attribute DataType'), count, dfs, idx, context)
         validate_data_type_size(row.get('Attribute Size'), row.get('Attribute DataType'), count, dfs, idx, context)
         validate_date_format(row.get('Attribute Range of Values'), row.get('Attribute DataType'), count, dfs, idx, context)
-        validate_connectivity(row.get('Connectivity Option'), count, dfs, idx, context)
-        validate_connectivity(row.get('Description for Connectivity'), count, dfs, idx, context)
+        validate_connectivity_option(row.get('Connectivity Option'), count, dfs, idx, context)
+        validate_connectivity_description(row.get('Description for Connectivity'), count, dfs, idx, context)
         validate_delimiter(row.get('Attribute Delimiter'), row.get('Attribute Delimiter- Other'), count, dfs, idx, context)
         validate_attribute_classification(row.get('Attribute Classification'), count, dfs, idx, context)
         validate_service(row.get('Service'), count, dfs, idx, context)
@@ -183,13 +216,13 @@ def validate_datasets(dfs, file, context, data_contract_path):
         validate_data_contract_type(row.get('DataContract Type'), count, dfs, idx, context)
         validate_attribute_primary_key(row.get('Attribute Primary Key'), count, dfs, idx, context)
         validate_dataset_classification(row.get('Data Classification Type'), count, dfs, idx, attribute_classification_list, context)
-        
-    parse_sample_file(dataset_name, entity_name, attributes, context, data_contract_path)
+
+    parse_sample_file(dataset, entity_name, attribute_list, context, data_contract_path)
 
 
 
-def parse_sample_file(dataset_name, attributes, context, data_contract_path):
-    dataset_file_prefix = entity_name + '_' + dataset_name
+def parse_sample_file(dataset_name, entity_name, attributes, context, data_contract_path):
+    dataset_file_prefix = context['entity_name'] + '_' + dataset_name
     sample_dir = os.path.join(data_contract_path, 'sampleFiles')
     sample_file_issues = []
 
@@ -897,27 +930,6 @@ def generate_report(file, context):
     report_path = os.path.join(report_dir, f"{file.split('.')[0]}_report.html")
     with open(report_path, 'w', encoding="utf-8") as f:
         f.write(output)
-
-def generateReport(file):
-	j2_env = Environment(loader=FileSystemLoader(CODES_DIR),
-						trim_blocks=True,autoescape=False)
-	if Issues:
-		data  = json.loads(Issues)
-	else:
-		data = []
-	final_list = [] 
-	for i in range(len(data)): 
-		if data[i] not in data[i + 1:]: 
-			final_list.append(data[i]) 
-	output =  j2_env.get_template('template/report.html').render(
-		issues=final_list,_otherIssues=otherIssues
-	)
-	REPORT_DIR = CODES_DIR +'/reports/'
-	report_path = os.path.join(REPORT_DIR, f"{file.split('.')[0]}_report.html")
-	with open(report_path, 'w', encoding="utf-8") as f:  
-		f.write("%s\n" % output)
-
-
 
 def main():
     args = read_input_args()
